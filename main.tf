@@ -1,121 +1,137 @@
-terraform {
-  required_version = ">= 1.5.0"
-
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 6.0"
-    }
-  }
-}
-
 provider "aws" {
   region = "us-east-1"
 }
 
-# ==========================================
-# VPC
-# ==========================================
 
-module "vpc" {
-  source  = "terraform-aws-modules/vpc/aws"
-  version = "6.5.1"
 
-  name = "med-erp-vpc"
-  cidr = "10.0.0.0/16"
+resource "aws_iam_role" "eks_cluster_role" {
+  name = "eks-cluster-role-cdec-b4"
+  assume_role_policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Service": [
+                    "eks.amazonaws.com"
+                ]
+            },
+            "Action": "sts:AssumeRole"
+        }
+    ]
+  })
+}
 
-  azs = [
-    "us-east-1a",
-    "us-east-1b"
+
+resource "aws_iam_role_policy_attachment" "cluster_policy_attachment" {
+  role       = aws_iam_role.eks_cluster_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+}
+
+data "aws_vpc" "my_vpc" {
+  default = true 
+}
+
+data "aws_subnets" "subnet" {
+  filter {
+    name = "vpc-id"
+    values = [data.aws_vpc.my_vpc.id]
+  }
+}
+
+resource "aws_eks_cluster" "my_eks" {
+  name = "my-eks"
+
+  access_config {
+    authentication_mode = "API"
+  }
+
+  role_arn = aws_iam_role.eks_cluster_role.arn
+  version  = "1.35"
+
+  vpc_config {
+    subnet_ids = data.aws_subnets.subnet.ids
+  }
+
+  # Ensure that IAM Role permissions are created before and deleted
+  # after EKS Cluster handling. Otherwise, EKS will not be able to
+  # properly delete EKS managed EC2 infrastructure such as Security Groups.
+  depends_on = [
+    aws_iam_role_policy_attachment.cluster_policy_attachment
   ]
+}
 
-  public_subnets = [
-    "10.0.101.0/24",
-    "10.0.102.0/24"
+resource "aws_iam_role" "node_role" {
+  name = "node-role-4"
+  assume_role_policy = jsonencode({
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Action": [
+                "sts:AssumeRole"
+            ],
+            "Principal": {
+                "Service": [
+                    "ec2.amazonaws.com"
+                ]
+            }
+        }
+    ]
+  })
+}
+
+
+resource "aws_iam_role_policy_attachment" "cni_policy_attachment" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+}
+
+resource "aws_iam_role_policy_attachment" "worker_node_policy_attachment" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "compute_policy_attachment" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSComputePolicy"
+}
+
+resource "aws_iam_role_policy_attachment" "con_registry_read_only_attachment" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+}
+
+resource "aws_iam_role_policy_attachment" "con_registry_public_read_only_attachment" {
+  role       = aws_iam_role.node_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonElasticContainerRegistryPublicReadOnly"
+}
+
+resource "aws_eks_node_group" "node_grp" {
+  cluster_name    = aws_eks_cluster.my_eks.name
+  node_group_name = "node-grp-001"
+  node_role_arn   = aws_iam_role.node_role.arn
+  subnet_ids      = data.aws_subnets.subnet.ids
+  instance_types = ["c7i-flex.large"]
+
+  scaling_config {
+    desired_size = 2
+    max_size     = 2
+    min_size     = 2
+  }
+
+  update_config {
+    max_unavailable = 1
+  }
+
+  # Ensure that IAM Role permissions are created before and deleted after EKS Node Group handling.
+  # Otherwise, EKS will not be able to properly delete EC2 Instances and Elastic Network Interfaces.
+  depends_on = [
+    aws_iam_role_policy_attachment.cni_policy_attachment,
+    aws_iam_role_policy_attachment.compute_policy_attachment,
+    aws_iam_role_policy_attachment.con_registry_public_read_only_attachment,
+    aws_iam_role_policy_attachment.con_registry_read_only_attachment,
+    aws_iam_role_policy_attachment.worker_node_policy_attachment,
+    aws_eks_cluster.my_eks
   ]
-
-  private_subnets = [
-    "10.0.1.0/24",
-    "10.0.2.0/24"
-  ]
-
-  enable_nat_gateway = true
-  single_nat_gateway = true
-
-  enable_dns_hostnames = true
-  enable_dns_support   = true
-
-  public_subnet_tags = {
-    "kubernetes.io/role/elb" = "1"
-  }
-
-  private_subnet_tags = {
-    "kubernetes.io/role/internal-elb" = "1"
-  }
-}
-
-# ==========================================
-# EKS CLUSTER + NODE GROUP
-# ==========================================
-
-module "eks" {
-  source  = "terraform-aws-modules/eks/aws"
-  version = "21.10.0"
-
-  name               = "med-erp-cluster"
-  kubernetes_version = "1.36"
-
-  vpc_id     = module.vpc.vpc_id
-  subnet_ids = module.vpc.private_subnets
-
-  endpoint_public_access = true
-
-  enable_cluster_creator_admin_permissions = true
-
-  # ========================================
-  # Managed Node Group
-  # ========================================
-
-  eks_managed_node_groups = {
-
-    node1 = {
-
-      name = "med-erp-node1"
-
-      instance_types = ["t3.medium"]
-
-      capacity_type = "ON_DEMAND"
-
-      min_size     = 2
-      max_size     = 3
-      desired_size = 2
-
-      disk_size = 20
-    }
-  }
-
-  tags = {
-    Project     = "medical-erp"
-    Environment = "dev"
-  }
-}
-
-# ==========================================
-# OUTPUTS
-# ==========================================
-
-output "node_group_name" {
-  value = module.eks.eks_managed_node_groups["node1"].node_group_id
-}
-
-output "eks_cluster_endpoint" {
-  value = module.eks.cluster_endpoint
-}
-
-output "vpc_id" {
-  value = module.vpc.vpc_id
-}
-
-output "node_group_name" {
-  value = module.eks.eks_managed_node_groups["node1"].node_group_name
 }

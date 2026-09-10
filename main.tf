@@ -104,8 +104,8 @@ module "eks" {
 # OUTPUTS
 # ==========================================
 
-output "eks_cluster_name" {
-  value = module.eks.cluster_name
+output "node_group_name" {
+  value = module.eks.eks_managed_node_groups["node1"].node_group_id
 }
 
 output "eks_cluster_endpoint" {

@@ -1,16 +1,7 @@
-
 pipeline {
-
     agent any
 
     stages {
-
-        stage('Checkout') {
-            steps {
-                git branch: 'main',
-                    url: 'https://github.com/Bhagvat-tanwade/eks.git'
-            }
-        }
 
         stage('Terraform Init') {
             steps {
@@ -32,7 +23,7 @@ pipeline {
 
         stage('Terraform Apply') {
             steps {
-                input message: 'Do you want to create EKS Cluster and Nodes?', ok: 'Apply'
+                input message: 'Do you want to create EKS Cluster and Node Group?', ok: 'Apply'
 
                 sh 'terraform apply -auto-approve'
             }
@@ -49,5 +40,4 @@ pipeline {
         }
     }
 }
-
 
